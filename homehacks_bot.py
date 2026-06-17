@@ -117,6 +117,23 @@ async def search_products(keyword: str) -> list:
         return []
 
 
+async def shorten_url(url: str) -> str:
+    """קצר קישור באמצעות TinyURL"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://tinyurl.com/api/create.php?url={url}",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    shortened = await resp.text()
+                    logger.info("קישור קוצר: %s -> %s", url[:50], shortened)
+                    return shortened
+    except Exception as e:
+        logger.error("שגיאה בקיצור קישור: %s", e)
+    return url  # אם נכשל, חזור לקישור המקורי
+
+
 # ============================================================
 #  עזר — הצגת מוצר
 # ============================================================
