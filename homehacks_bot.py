@@ -118,14 +118,20 @@ async def search_products(keyword: str) -> list:
 
 
 async def shorten_url(url: str) -> str:
-    """קצר קישור באמצעות AliExpress API"""
+    """קצר קישור באמצעות URL shortener service"""
     try:
-        # חלץ את ה-ID של המוצר מהקישור
-        if "productId=" in url:
-            product_id = url.split("productId=")[1].split("&")[0]
-            short_url = f"https://s.click.aliexpress.com/e/_c{product_id}"
-            logger.info("קישור קוצר של AliExpress: %s", short_url)
-            return short_url
+        async with aiohttp.ClientSession() as session:
+            # נסה עם v.gd shortener
+            async with session.get(
+                f"https://v.gd/?format=json&url={url}",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if "short_url" in data:
+                        short = data["short_url"]
+                        logger.info("קישור קוצר: %s", short)
+                        return short
     except Exception as e:
         logger.error("שגיאה בקיצור קישור: %s", e)
     return url  # אם נכשל, חזור לקישור המקורי
