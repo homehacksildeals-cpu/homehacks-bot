@@ -118,17 +118,14 @@ async def search_products(keyword: str) -> list:
 
 
 async def shorten_url(url: str) -> str:
-    """קצר קישור באמצעות TinyURL"""
+    """קצר קישור באמצעות AliExpress API"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://tinyurl.com/api/create.php?url={url}",
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as resp:
-                if resp.status == 200:
-                    shortened = await resp.text()
-                    logger.info("קישור קוצר: %s -> %s", url[:50], shortened)
-                    return shortened
+        # חלץ את ה-ID של המוצר מהקישור
+        if "productId=" in url:
+            product_id = url.split("productId=")[1].split("&")[0]
+            short_url = f"https://s.click.aliexpress.com/e/_c{product_id}"
+            logger.info("קישור קוצר של AliExpress: %s", short_url)
+            return short_url
     except Exception as e:
         logger.error("שגיאה בקיצור קישור: %s", e)
     return url  # אם נכשל, חזור לקישור המקורי
