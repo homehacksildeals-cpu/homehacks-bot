@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HomeHacks Affiliate Bot - Simple Version
-שלח קישורים לקבוצת גשר, ומשם @homehacks_il_bot יטפל בהם
+HomeHacks Affiliate Bot
+חיפוש מוצרים מאלי אקספרס ושליחה לקבוצה
 """
 
+import asyncio
 import hashlib
 import logging
 import time
 
-import asyncio
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -19,8 +19,14 @@ from telegram.ext import (
     ContextTypes,
 )
 
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
 # ============================================================
-#  הגדרות — מלא את הפרטים שלך כאן
+#  הגדרות
 # ============================================================
 
 BOT_TOKEN         = "8710753369:AAGAQgJvKZpJNDX8OHmFywGz2dB4h8F3QK4"
@@ -29,10 +35,7 @@ APP_SECRET        = "mXB4CsSeXNpjwRrLRXEzHWt3zoil5AvB"
 TRACKING_ID       = "homehacks_telegram"
 CHANNEL_ID        = "@homehacks_il"
 BRIDGE_GROUP      = -1004350404248
-
-# ============================================================
-#  הגדרות חיפוש
-# ============================================================
+YOUR_USER_ID      = 1370253420
 
 CATEGORIES = {
     "בית וגינה כללי":   "home garden gadgets",
@@ -45,24 +48,11 @@ CATEGORIES = {
     "אבטחה וסייבר":      "home security camera",
 }
 
-MAX_PRODUCTS = 50
-
-# ============================================================
-#  לוגינג
-# ============================================================
-
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+ALI_API_URL = "https://api-sg.aliexpress.com/sync"
 
 # ============================================================
 #  AliExpress API
 # ============================================================
-
-ALI_API_URL = "https://api-sg.aliexpress.com/sync"
-
 
 def _sign(params: dict, secret: str) -> str:
     sorted_params = sorted(params.items())
@@ -71,19 +61,7 @@ def _sign(params: dict, secret: str) -> str:
 
 
 async def search_products(keyword: str) -> list:
-    for attempt in range(2):  # נסה פעמיים אם נכשל
-        try:
-            return await _search_products_internal(keyword)
-        except Exception as e:
-            if attempt == 0:
-                logger.warning("ניסיון 1 נכשל, מנסה שוב: %s", e)
-                await asyncio.sleep(1)
-            else:
-                raise
-    return []
-
-
-async def _search_products_internal(keyword: str) -> list:
+    """חפש מוצרים בAliExpress"""
     timestamp = str(int(time.time() * 1000))
     params = {
         "method":        "aliexpress.affiliate.product.query",
@@ -95,7 +73,7 @@ async def _search_products_internal(keyword: str) -> list:
         "keywords":      keyword,
         "tracking_id":   TRACKING_ID,
         "page_no":       "1",
-        "page_size":     str(MAX_PRODUCTS),
+        "page_size":     "50",
         "sort":          "LAST_VOLUME_DESC",
         "fields":        "product_id,product_title,product_main_image_url,sale_price,original_price,evaluate_rate,volume,promotion_link,lastest_volume",
     }
@@ -112,7 +90,6 @@ async def _search_products_internal(keyword: str) -> list:
             return []
         
         all_products = result.get("result", {}).get("products", {}).get("product", [])
-        # סנן מוצרים חמים בלבד (100+ הזמנות, 90%+ דירוג)
         filtered = []
         for p in all_products:
             try:
@@ -123,16 +100,16 @@ async def _search_products_internal(keyword: str) -> list:
             except Exception:
                 pass
         
-        logger.info("נמצאו %d מוצרים, %d עברו פילטר", len(all_products), len(filtered))
+        logger.info("Found %d products, %d passed filter", len(all_products), len(filtered))
         return filtered if filtered else all_products
 
     except Exception as e:
-        logger.error("שגיאה בחיפוש: %s", e)
+        logger.error("Search error: %s", e)
         return []
 
 
 # ============================================================
-#  עזר — הצגת מוצר
+#  UI Helpers
 # ============================================================
 
 def build_buttons():
@@ -147,23 +124,18 @@ def build_buttons():
     ])
 
 
-async def show_product(source, ctx: ContextTypes.DEFAULT_TYPE, is_update=True):
+async def show_product(source, ctx: ContextTypes.DEFAULT_TYPE):
     products = ctx.user_data.get("products", [])
     index    = ctx.user_data.get("index", 0)
 
     if index >= len(products):
-        msg = "✅ עברת על כל המוצרים. שלח /find לחיפוש חדש."
-        if is_update:
-            await source.message.reply_text(msg)
-        else:
-            await source.message.reply_text(msg)
+        await source.message.reply_text("✅ סיום! שלח /find לחיפוש חדש.")
         return
 
     product = products[index]
     title   = product.get("product_title", "מוצר")[:80]
     price   = product.get("sale_price", "N/A")
     orig    = product.get("original_price", "")
-    rating  = product.get("evaluate_rate", "")
     volume  = product.get("lastest_volume", "")
     image   = product.get("product_main_image_url", "")
     total   = len(products)
@@ -174,46 +146,37 @@ async def show_product(source, ctx: ContextTypes.DEFAULT_TYPE, is_update=True):
         o = float(str(orig).replace(",", ""))
         if o > p:
             pct = int((1 - p / o) * 100)
-            discount = f"🔻 {pct}% הנחה (היה ${orig})"
-    except Exception:
-        pass
-
-    stars = ""
-    try:
-        r = float(str(rating).replace("%", "")) / 20
-        stars = "⭐" * round(r)
+            discount = f"🔻 {pct}% הנחה"
     except Exception:
         pass
 
     preview = f"📦 מוצר {index + 1}/{total}\n\n🛒 {title}\n💰 ${price}"
     if discount:
         preview += f"\n{discount}"
-    if stars:
-        preview += f"\n{stars}"
     if volume:
         preview += f"\n📦 {volume} הזמנות"
 
     buttons = build_buttons()
 
     try:
-        msg_obj = source.message
-
         if image:
-            await msg_obj.reply_photo(photo=image, caption=preview, reply_markup=buttons)
+            await source.message.reply_photo(photo=image, caption=preview, reply_markup=buttons)
         else:
-            await msg_obj.reply_text(preview, reply_markup=buttons)
+            await source.message.reply_text(preview, reply_markup=buttons)
     except Exception as e:
-        logger.error("שגיאה בהצגת מוצר: %s", e)
+        logger.error("Error showing product: %s", e)
 
 
 # ============================================================
-#  Handlers
+#  Commands
 # ============================================================
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != YOUR_USER_ID:
+        return
     await update.message.reply_text(
-        "👋 *ברוך הבא ל-HomeHacks Bot!*\n\n"
-        "/find — חפש מוצרים חמים\n"
+        "👋 *ברוך הבא!*\n\n"
+        "/find — חפש מוצרים\n"
         "/category — בחר קטגוריה\n"
         "/help — עזרה",
         parse_mode="Markdown",
@@ -221,12 +184,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    keywords_list = list(CATEGORIES.values())
+    if update.effective_user.id != YOUR_USER_ID:
+        return
+
     await update.message.reply_text("🔍 מחפש מוצרים...")
-    products = await search_products(keywords_list[0])
+    keywords = list(CATEGORIES.values())
+    products = await search_products(keywords[0])
 
     if not products:
-        await update.message.reply_text("❌ לא נמצאו מוצרים. נסה שוב.")
+        await update.message.reply_text("❌ לא נמצאו מוצרים.")
         return
 
     ctx.user_data["products"]    = products
@@ -234,10 +200,12 @@ async def cmd_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["kw_index"]    = 0
     ctx.user_data["cat_counter"] = 0
     ctx.user_data["seen_ids"]    = set()
-    await show_product(update, ctx, is_update=True)
+    await show_product(update, ctx)
 
 
 async def cmd_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != YOUR_USER_ID:
+        return
     buttons = [
         [InlineKeyboardButton(name, callback_data=f"cat:{kw}")]
         for name, kw in CATEGORIES.items()
@@ -246,22 +214,27 @@ async def cmd_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != YOUR_USER_ID:
+        return
     await update.message.reply_text(
-        "📖 *עזרה*\n\n"
-        "/find — מחפש מוצרים חמים\n"
-        "/category — בחר קטגוריה ספציפית\n\n"
-        "✅ *שלח לקבוצה* — משלח קישור לקבוצת הגשר\n"
-        "❌ *דלג* — מוצר הבא\n"
-        "🔁 *חפש עוד* — קטגוריה הבאה",
+        "📖 עזרה\n\n"
+        "/find — חפש\n"
+        "/category — קטגוריה",
         parse_mode="Markdown",
     )
 
 
+# ============================================================
+#  Callbacks
+# ============================================================
+
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    
     if update.effective_user.id != YOUR_USER_ID:
         await query.answer("לא מורשה", show_alert=True)
         return
+    
     await query.answer()
 
     data     = query.data
@@ -272,15 +245,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # בחירת קטגוריה
     if data.startswith("cat:"):
         keyword = data.split("cat:")[1]
-        await query.message.reply_text(f"🔍 מחפש...")
+        await query.message.reply_text("🔍 מחפש...")
         found = await search_products(keyword)
         if not found:
             await query.message.reply_text("❌ לא נמצאו מוצרים.")
             return
-        ctx.user_data["products"]    = found
-        ctx.user_data["index"]       = 0
+        ctx.user_data["products"] = found
+        ctx.user_data["index"]    = 0
         ctx.user_data["cat_counter"] = 0
-        await show_product(query, ctx, is_update=False)
+        await show_product(query, ctx)
         return
 
     # שלח לקבוצה
@@ -294,14 +267,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         try:
             await bot.send_message(chat_id=BRIDGE_GROUP, text=link)
-            await query.message.reply_text(f"✅ קישור נשלח לקבוצה!")
-            logger.info("קישור נשלח: %s", link)
+            await query.message.reply_text("✅ קישור נשלח!\n\nעבור אותו ידנית ל-@homehacks_il_bot")
+            logger.info("Link sent: %s", link)
         except Exception as e:
             await query.message.reply_text(f"❌ שגיאה: {e}")
-            logger.error("שגיאה בשליחה: %s", e)
+            logger.error("Send error: %s", e)
 
         ctx.user_data["index"] = index + 1
-        await show_product(query, ctx, is_update=False)
+        await show_product(query, ctx)
 
     # דלג
     elif data == "action:skip":
@@ -313,40 +286,39 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["index"]       = index + 1
         ctx.user_data["cat_counter"] = ctx.user_data.get("cat_counter", 0) + 1
 
-        # כל 5 מוצרים — עבור לקטגוריה הבאה
         if ctx.user_data["cat_counter"] >= 5:
-            seen          = ctx.user_data.get("seen_ids", set())
-            keywords_list = list(CATEGORIES.values())
-            cat_names     = list(CATEGORIES.keys())
-            kw_index      = (ctx.user_data.get("kw_index", 0) + 1) % len(keywords_list)
-            ctx.user_data["kw_index"]    = kw_index
+            seen = ctx.user_data.get("seen_ids", set())
+            keywords = list(CATEGORIES.values())
+            names = list(CATEGORIES.keys())
+            kw_idx = (ctx.user_data.get("kw_index", 0) + 1) % len(keywords)
+            ctx.user_data["kw_index"]    = kw_idx
             ctx.user_data["cat_counter"] = 0
-            await query.message.reply_text(f"🔄 עובר לקטגוריה: {cat_names[kw_index]}...")
-            found = await search_products(keywords_list[kw_index])
+            await query.message.reply_text(f"🔄 עובר ל: {names[kw_idx]}...")
+            found = await search_products(keywords[kw_idx])
             found = [p for p in found if p.get("product_id") not in seen]
             if found:
                 ctx.user_data["products"] = found
                 ctx.user_data["index"]    = 0
 
-        await show_product(query, ctx, is_update=False)
+        await show_product(query, ctx)
 
     # חפש עוד
     elif data == "action:more":
-        seen          = ctx.user_data.get("seen_ids", set())
-        keywords_list = list(CATEGORIES.values())
-        cat_names     = list(CATEGORIES.keys())
-        kw_index      = (ctx.user_data.get("kw_index", 0) + 1) % len(keywords_list)
-        ctx.user_data["kw_index"]    = kw_index
+        seen = ctx.user_data.get("seen_ids", set())
+        keywords = list(CATEGORIES.values())
+        names = list(CATEGORIES.keys())
+        kw_idx = (ctx.user_data.get("kw_index", 0) + 1) % len(keywords)
+        ctx.user_data["kw_index"]    = kw_idx
         ctx.user_data["cat_counter"] = 0
-        await query.message.reply_text(f"🔍 עובר לקטגוריה: {cat_names[kw_index]}...")
-        found = await search_products(keywords_list[kw_index])
+        await query.message.reply_text(f"🔍 עובר ל: {names[kw_idx]}...")
+        found = await search_products(keywords[kw_idx])
         found = [p for p in found if p.get("product_id") not in seen]
         if not found:
-            await query.message.reply_text("❌ לא נמצאו מוצרים חדשים. נסה /find.")
+            await query.message.reply_text("❌ לא נמצאו מוצרים חדשים.")
             return
         ctx.user_data["products"] = found
         ctx.user_data["index"]    = 0
-        await show_product(query, ctx, is_update=False)
+        await show_product(query, ctx)
 
 
 # ============================================================
@@ -354,14 +326,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 def main():
-    logger.info("מפעיל את HomeHacks Bot...")
+    logger.info("Starting HomeHacks Bot...")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",    cmd_start))
     app.add_handler(CommandHandler("find",     cmd_find))
     app.add_handler(CommandHandler("category", cmd_category))
     app.add_handler(CommandHandler("help",     cmd_help))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    logger.info("הבוט פועל! ממתין להודעות...")
+    logger.info("Bot running!")
     app.run_polling(drop_pending_updates=True)
 
 
