@@ -245,6 +245,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if update.effective_user.id != YOUR_USER_ID:
+        await query.answer("לא מורשה", show_alert=True)
+        return
     await query.answer()
 
     data     = query.data
