@@ -9,6 +9,7 @@ import hashlib
 import logging
 import time
 
+import asyncio
 import aiohttp
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -70,6 +71,19 @@ def _sign(params: dict, secret: str) -> str:
 
 
 async def search_products(keyword: str) -> list:
+    for attempt in range(2):  # נסה פעמיים אם נכשל
+        try:
+            return await _search_products_internal(keyword)
+        except Exception as e:
+            if attempt == 0:
+                logger.warning("ניסיון 1 נכשל, מנסה שוב: %s", e)
+                await asyncio.sleep(1)
+            else:
+                raise
+    return []
+
+
+async def _search_products_internal(keyword: str) -> list:
     timestamp = str(int(time.time() * 1000))
     params = {
         "method":        "aliexpress.affiliate.product.query",
@@ -89,7 +103,7 @@ async def search_products(keyword: str) -> list:
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(ALI_API_URL, data=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(ALI_API_URL, data=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 data = await resp.json(content_type=None)
 
         result = data.get("aliexpress_affiliate_product_query_response", {}).get("resp_result", {})
